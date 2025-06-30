@@ -1,0 +1,78 @@
+name: Build and Push Docker Image  
+on:  
+  push:  
+    # branches: [ "main" ]  
+    tags: [ 'v*.*.*' ]  
+  pull_request:  
+    branches: [ "main" ]  
+  # 也可以手动触发  
+  workflow_dispatch:  
+jobs:  
+  build-and-push:  
+    runs-on: ubuntu-latest  
+    permissions:  
+      contents: read  
+      packages: write  
+    steps:  
+      - name: Checkout repository  
+        uses: actions/checkout@v4  
+      - name: Set up Docker Buildx  
+        uses: docker/setup-buildx-action@v3  
+      # 登录到 GitHub 容器仓库  
+      - name: Login to GitHub Container Registry  
+        uses: docker/login-action@v3  
+        with:  
+          registry: ghcr.io  
+          username: ${{ github.repository_owner }}  
+          password: ${{ secrets.GITHUB_TOKEN }}  
+      # 提取仓库名称作为镜像名  
+      - name: Extract repository name  
+        id: repo-name  
+        run: echo "REPO_NAME=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT  
+      
+      # 提取 Git tag 作为版本号  
+      - name: Extract tag version  
+        id: tag-version  
+        if: startsWith(github.ref, 'refs/tags/v')  
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT  
+
+      # 设置默认版本标签  
+      - name: Set default version  
+        id: version  
+        run: |  
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then  
+            echo "TAG=${{ steps.tag-version.outputs.VERSION }}" >> $GITHUB_OUTPUT  
+          else  
+            SHORT_SHA=$(echo ${GITHUB_SHA} | cut -c1-7)  
+            DATE=$(date +'%Y%m%d')  
+            echo "TAG=${DATE}-${SHORT_SHA}" >> $GITHUB_OUTPUT  
+          fi  
+      - name: Build and Push Images  
+        uses: docker/build-push-action@v5  
+        with:  
+          context: .  
+          push: true  
+          tags: |  
+            ghcr.io/${{ steps.repo-name.outputs.REPO_NAME }}:latest  
+            ghcr.io/${{ steps.repo-name.outputs.REPO_NAME }}:${{ steps.version.outputs.TAG }}  
+      
+      # 专门为 ARM64 架构构建并推送镜像  
+      - name: Build and Push ARM64 Image  
+        uses: docker/build-push-action@v5  
+        with:  
+          context: .  
+          push: true  
+          platforms: linux/arm64  
+          tags: |  
+            ghcr.io/${{ steps.repo-name.outputs.REPO_NAME }}:arm-latest  
+            ${{ github.ref_type == 'tag' && format('ghcr.io/{0}:arm-{1}', steps.repo-name.outputs.REPO_NAME, steps.version.outputs.TAG) || '' }}  
+      
+      # 输出镜像信息  
+      - name: Image digest  
+        run: |  
+          echo " image has been pushed to ghcr.io/${{ steps.repo-name.outputs.REPO_NAME }}:latest"  
+          echo " image has been pushed to ghcr.io/${{ steps.repo-name.outputs.REPO_NAME }}:${{ steps.version.outputs.TAG }}"  
+          echo "ARM64-only image has been pushed to ghcr.io/${{ steps.repo-name.outputs.REPO_NAME }}:arm-latest"  
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then  
+            echo "ARM64-only image has been pushed to ghcr.io/${{ steps.repo-name.outputs.REPO_NAME }}:arm-${{ steps.version.outputs.TAG }}"  
+          fi  
